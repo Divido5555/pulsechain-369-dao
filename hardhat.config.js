@@ -1,4 +1,3 @@
-// hardhat.config.js
 require("@nomiclabs/hardhat-waffle");
 require("dotenv").config();
 
@@ -7,7 +6,6 @@ module.exports = {
   networks: {
     pulsechain: {
       url: process.env.PULSECHAIN_RPC,
-      accounts: [process.env.PRIVATE_KEY]
-    }
-  }
+    },
+  },
 };
