@@ -1,85 +1,97 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.7.6;
 
-interface IERC20 {
-    function balanceOf(address account) external view returns (uint256);
+interface IDAOConfig {
+    function voteFrequencyDays() external view returns (uint256);
+    function votingDelay() external view returns (uint256);
+    function quorumPercent() external view returns (uint256);
+    function votingEnabled() external view returns (bool);
 }
 
 contract Governance {
+    address public daoConfig;
+
     struct Proposal {
         uint256 id;
         address proposer;
-        string title;
         string description;
-        uint256 voteStart;
-        uint256 voteEnd;
-        uint256 forVotes;
-        uint256 againstVotes;
+        uint256 startTime;
+        uint256 endTime;
+        uint256 yesVotes;
+        uint256 noVotes;
         bool executed;
-        bool approved;
     }
 
-    IERC20 public daoToken;
-    address public founder;
-    uint256 public proposalDuration = 3 days;
     uint256 public proposalCount;
-
     mapping(uint256 => Proposal) public proposals;
+    mapping(address => uint256) public lastProposalTimestamp;
     mapping(uint256 => mapping(address => bool)) public hasVoted;
 
-    constructor(address _token) {
-        daoToken = IERC20(_token);
-        founder = msg.sender;
+    event ProposalCreated(uint256 indexed id, address proposer, string description);
+    event Voted(uint256 indexed id, address voter, bool support);
+    event ProposalExecuted(uint256 indexed id);
+
+    constructor(address _daoConfig) {
+        daoConfig = _daoConfig;
     }
 
-    function createProposal(string calldata title, string calldata description) external returns (uint256) {
-        uint256 id = ++proposalCount;
-        proposals[id] = Proposal({
-            id: id,
+    function createProposal(string calldata _description) external {
+        require(IDAOConfig(daoConfig).votingEnabled(), "Voting not active");
+        uint256 throttle = IDAOConfig(daoConfig).voteFrequencyDays() * 1 days;
+        require(
+            block.timestamp >= lastProposalTimestamp[msg.sender] + throttle,
+            "Proposal too soon"
+        );
+
+        proposalCount++;
+        uint256 delay = IDAOConfig(daoConfig).votingDelay();
+
+        proposals[proposalCount] = Proposal({
+            id: proposalCount,
             proposer: msg.sender,
-            title: title,
-            description: description,
-            voteStart: block.timestamp,
-            voteEnd: block.timestamp + proposalDuration,
-            forVotes: 0,
-            againstVotes: 0,
-            executed: false,
-            approved: false
+            description: _description,
+            startTime: block.timestamp + delay,
+            endTime: block.timestamp + delay + 3 days,
+            yesVotes: 0,
+            noVotes: 0,
+            executed: false
         });
-        return id;
+
+        lastProposalTimestamp[msg.sender] = block.timestamp;
+        emit ProposalCreated(proposalCount, msg.sender, _description);
     }
 
-    function vote(uint256 proposalId, bool support) external {
-        Proposal storage p = proposals[proposalId];
-        require(block.timestamp >= p.voteStart, "Voting not started");
-        require(block.timestamp <= p.voteEnd, "Voting ended");
-        require(!hasVoted[proposalId][msg.sender], "Already voted");
+    function vote(uint256 _proposalId, bool support) external {
+        Proposal storage prop = proposals[_proposalId];
+        require(block.timestamp >= prop.startTime, "Voting not started");
+        require(block.timestamp <= prop.endTime, "Voting ended");
+        require(!hasVoted[_proposalId][msg.sender], "Already voted");
 
-        uint256 weight = daoToken.balanceOf(msg.sender);
-        require(weight > 0, "No tokens");
-
+        hasVoted[_proposalId][msg.sender] = true;
         if (support) {
-            p.forVotes += weight;
+            prop.yesVotes++;
         } else {
-            p.againstVotes += weight;
+            prop.noVotes++;
         }
 
-        hasVoted[proposalId][msg.sender] = true;
+        emit Voted(_proposalId, msg.sender, support);
     }
 
-    function finalize(uint256 proposalId) external {
-        Proposal storage p = proposals[proposalId];
-        require(block.timestamp > p.voteEnd, "Voting not ended");
-        require(!p.executed, "Already finalized");
+    function executeProposal(uint256 _proposalId) external {
+        Proposal storage prop = proposals[_proposalId];
+        require(block.timestamp > prop.endTime, "Voting not ended");
+        require(!prop.executed, "Already executed");
 
-        p.executed = true;
+        uint256 totalVotes = prop.yesVotes + prop.noVotes;
+        uint256 quorum = IDAOConfig(daoConfig).quorumPercent();
 
-        if (p.forVotes > p.againstVotes) {
-            p.approved = true;
-        }
-    }
+        // Simplified quorum logic (assumes 100 = 100%)
+        require((prop.yesVotes * 100) / totalVotes >= quorum, "Quorum not met");
 
-    function isProposalApproved(uint256 proposalId) external view returns (bool) {
-        return proposals[proposalId].approved;
+        prop.executed = true;
+        emit ProposalExecuted(_proposalId);
+
+        // NOTE: Actual proposal execution logic (e.g., treasury transfer) would go here
     }
 }
+
